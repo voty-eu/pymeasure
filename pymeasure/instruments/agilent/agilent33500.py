@@ -828,11 +828,11 @@ class Agilent33500(Instrument):
 
     def load_setup_from_storage(self, filename: str):
         """Loas instrument setup from internal storage. Example: 'INT:\MySetup.sta' File extension is optional."""
-        self.write(f"MMEM:LOAD:STAT {str(filename)}")
+        self.write(f'MMEM:LOAD:STAT "{str(filename)}"')
 
     def save_setup_to_storage(self, filename: str):
         """Stores instrument setup to internal storage. Example: 'INT:\MySetup.sta' File extension is optional."""
-        self.write(f"MMEM:STOR:STAT {str(filename)}")
+        self.write(f'MMEM:STOR:STAT "{str(filename)}"')
 
     def read_from_storage(self, filename: str) -> bytes:
         """Loads a file from the internal storage. Example: 'INT:\MyFile.txt'"""
@@ -841,16 +841,18 @@ class Agilent33500(Instrument):
 
     def write_to_storage(self, filename: str, data: bytes):
         """Stores a file to the internal storage. Example: 'INT:\MyFile.txt'"""
+        self.check_errors()
         self.write(f'MMEM:DOWN:FNAM "{str(filename)}"')
+        fname = self.ask("MMEM:DOWN:FNAM?")
         self._write_binary_data(data, command='MMEM:DOWN:DATA')
 
     def _write_binary_data(self, data: bytes, command: str = ""):
         """Writes binary data (bytes) to the device. Could be prefixed with a text command."""
         dlen = f'{len(data):d}'
-        ll = f'{dlen:01d}'
+        ll = f'{len(dlen):01d}'
         assert len(ll) == 1
-        self.write(f'{command} #{ll}{dlen}')
-        self.write_raw(data)
+        data = f'{command} #{ll}{dlen}'.encode('ascii') + data
+        self.write_bytes(data)
 
     def _read_binary_data(self) -> bytes:
         """Reads binary data (bytes) from the device."""
