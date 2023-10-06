@@ -25,6 +25,8 @@
 # Parts of this code were copied and adapted from the Agilent33220A class.
 
 import logging
+import typing
+
 from pymeasure.instruments import Instrument, Channel
 from pymeasure.instruments.validators import strict_discrete_set, strict_range
 from time import time
@@ -389,9 +391,9 @@ class Agilent33500(Instrument):
 
     """
 
-    ch_1 = Instrument.ChannelCreator(Agilent33500Channel, 1)
+    ch_1: Agilent33500Channel = Instrument.ChannelCreator(Agilent33500Channel, 1)
 
-    ch_2 = Instrument.ChannelCreator(Agilent33500Channel, 2)
+    ch_2: Agilent33500Channel = Instrument.ChannelCreator(Agilent33500Channel, 2)
 
     def __init__(self, adapter, name="Agilent 33500 Function/Arbitrary Waveform generator family",
                  **kwargs):
@@ -718,9 +720,21 @@ class Agilent33500(Instrument):
                             format = 'float': Accepts list of floating point values ranging from
                             -1.0 to +1.0. Minimum of 8 a maximum of 65536 points.
                             format = 'binary': Accepts a binary stream of 8 bit data.
+                            format = 'DAC_binary': Same as 'DAC', but data is sent as binary stream,
+                            mamximum number of points - up to free volatile memory. Each point is 2 bytes.
+                            format = 'float_binary': Same as 'float', but data is sent as binary stream,
+                            mamximum number of points - up to free volatile memory. Each point is 4 bytes.
+                            format = 'binary': Send data_points as binary stream (bytes).
         :param data_format: Defines the format of data_points. Can be 'DAC' (default), 'float' or
                             'binary'. See documentation on parameter data_points above.
         """
+
+        def write_binary_arb_data(_data: bytes):
+            # orig_state = self.read("FORM:BORD?")  # Save original byte order
+            self.write("FORM:BORD SWAP")  # Set byte order to little endian
+            self._write_binary_data(_data, command=f'DATA:ARB {arb_name}')
+            # self.write("FORM:BORD " + orig_state)  # Set byte order back to original
+
         if data_format == "DAC":
             separator = ", "
             data_points_str = [str(item) for item in data_points]  # Turn list entries into strings
@@ -733,13 +747,16 @@ class Agilent33500(Instrument):
             data_string = separator.join(data_points_str)  # Join strings with separator
             self.write(f"DATA:ARB {arb_name}, {data_string}")
             return
-        elif data_format == "binary":  # TODO: *Binary is not yet implemented*
-            raise NotImplementedError(
-                'The binary format has not yet been implemented. Use "DAC" or "float" instead.'
-            )
+        elif data_format == "binary_dac":
+            data = b''.join([_p.to_bytes(2, 'little', signed=True) for _p in data_points])
+            write_binary_arb_data(data)
+        elif data_format == "binary_float":
+            import struct
+            data = b''.join([struct.pack('<f', _p) for _p in data_points])
+            write_binary_arb_data(data)
         else:
             raise ValueError(
-                'Undefined format keyword was used. Valid entries are "DAC", "float" and "binary"'
+                'Undefined format keyword was used. Valid entries are "DAC", "float", "binary_float" and "binary_dac".'
             )
 
     display = Instrument.setting(
@@ -808,3 +825,36 @@ class Agilent33500(Instrument):
         map_values=True,
         values={True: 1, False: 0},
     )
+
+    def load_setup_from_storage(self, filename: str):
+        """Loas instrument setup from internal storage. Example: 'INT:\MySetup.sta' File extension is optional."""
+        self.write(f"MMEM:LOAD:STAT {str(filename)}")
+
+    def save_setup_to_storage(self, filename: str):
+        """Stores instrument setup to internal storage. Example: 'INT:\MySetup.sta' File extension is optional."""
+        self.write(f"MMEM:STOR:STAT {str(filename)}")
+
+    def read_from_storage(self, filename: str) -> bytes:
+        """Loads a file from the internal storage. Example: 'INT:\MyFile.txt'"""
+        self.write(f'MMEM:UPL? "{str(filename)}"')
+        return self._read_binary_data()
+
+    def write_to_storage(self, filename: str, data: bytes):
+        """Stores a file to the internal storage. Example: 'INT:\MyFile.txt'"""
+        self.write(f'MMEM:DOWN:FNAM "{str(filename)}"')
+        self._write_binary_data(data, command='MMEM:DOWN:DATA')
+
+    def _write_binary_data(self, data: bytes, command: str = ""):
+        """Writes binary data (bytes) to the device. Could be prefixed with a text command."""
+        dlen = f'{len(data):d}'
+        ll = f'{dlen:01d}'
+        assert len(ll) == 1
+        self.write(f'{command} #{ll}{dlen}')
+        self.write_raw(data)
+
+    def _read_binary_data(self) -> bytes:
+        """Reads binary data (bytes) from the device."""
+        ll = self.read_bytes(2).decode()
+        assert ll[0] == '#'
+        dlen = self.read_bytes(int(ll[1:])).decode()
+        return self.read_bytes(int(dlen))
